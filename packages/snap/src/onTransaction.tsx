@@ -134,78 +134,18 @@ export const onTransaction: OnTransactionHandler = async ({
       : { contacts: [] };
   const extendedIndex = indexExtendedNetwork(extendedNetwork);
 
-  // Compute the safety read surface FIRST (critical reports, soft flags,
-  // provenance). Resolves predicate/object term IDs from the claim-template
-  // registry and gates signals by the publisher whitelist + the user's trust
-  // circle. Computed before familiarity so the term_ids it surfaces can be
-  // excluded from the familiarity section (Opt 3 dedup — one home per claim).
-  let accountSafety: SafetyData | undefined;
-  if (accountData.account && !suppressAccount) {
-    accountSafety = await getSafetyData(accountData.account.term_id, {
-      registry: claimTemplates,
-      trustedCircle,
-      whitelist: publisherWhitelist,
-      userAddress,
-      isContract: accountData.isContract,
-      extendedIndex: EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
-    });
-  }
-
-  // Collect the triple term_ids already surfaced by the safety lane (critical +
-  // warnings + provenance). These claims have their home in the safety section,
-  // so they are excluded from the familiarity section below.
-  const safetyTermIds = new Set<string>();
-  if (accountSafety) {
-    for (const signal of [
-      ...accountSafety.critical,
-      ...accountSafety.warnings,
-      ...accountSafety.provenance,
-    ]) {
-      safetyTermIds.add(signal.termId);
-    }
-  }
-
-  // Calculate network familiarity (trusted contacts with ANY claim about this
-  // address). The `has tag → trustworthy` triple is no longer special-cased —
-  // it surfaces here as a regular claim like any other.
-  let accountNetworkFamiliarity: NetworkFamiliarity | undefined;
-  if (trustedCircle.length > 0 && accountData.account && !suppressAccount) {
-    accountNetworkFamiliarity = await getNetworkFamiliarity(
-      accountData.account.term_id,
-      trustedCircle,
-      new Set<string>(),
-      userAddress,
-      EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
-      safetyTermIds,
-      claimTemplates,
-    );
-  }
-
-  // The viewer's OWN staked claims about the destination address ("Your take").
-  // Independent of the trusted circle — a personal signal ("I tagged this
-  // trustworthy") is always surfaced back to the viewer. Safety-surfaced claims
-  // are excluded so each claim has exactly one home.
-  let accountSelfClaims: SelfClaims | undefined;
-  if (userAddress && accountData.account && !suppressAccount) {
-    accountSelfClaims = await getSelfClaims(
-      accountData.account.term_id,
-      userAddress,
-      safetyTermIds,
-      claimTemplates,
-    );
-  }
-
   // Whether the dApp-origin surface is suppressed (no origin, MetaMask, or a
   // localhost/dev URL). Computed here so origin safety/familiarity work can be
-  // skipped entirely when there is nothing to show.
+  // skipped entirely when there is nothing to show. Hoisted above the lane work
+  // so the origin phase can run concurrently with the account phase.
   const suppressOrigin = shouldSuppressOrigin(
     transactionOrigin,
     originData.hostname,
   );
 
-  // Public-claims (escape-hatch) lane: fire BOTH fetches now, in parallel, so
-  // their round-trips overlap the safety / familiarity / self queries above and
-  // below. The fetch is dependency-free (no cross-lane exclusion) — the dedup +
+  // Public-claims (escape-hatch) lane: fire BOTH fetches now, BEFORE the
+  // safety/familiarity/self lanes, so their round-trips overlap all of that
+  // work. The fetch is dependency-free (no cross-lane exclusion) — the dedup +
   // sort + top-N happens after every lane resolves via finalizePublicClaims.
   // Gated by PUBLIC_CLAIMS_ENABLED + atom presence + the per-subject suppress
   // flag. `undefined` promises resolve to `undefined` (no lane).
@@ -218,64 +158,130 @@ export const onTransaction: OnTransactionHandler = async ({
       ? getPublicClaims(originData.origin.term_id, claimTemplates)
       : Promise.resolve(undefined);
 
-  // Origin (dApp) safety read surface — same pipeline as the destination
-  // address, scoped to the URL/site claim vocabulary (entity 'site'). Hard
-  // reports (phishing / drainer / scam) are critical-worthy; the soft tag
-  // (impersonation) is a warning. Positives are NOT safety — they surface via
-  // origin familiarity below, mirroring how the address treats `trustworthy`.
-  let originSafety: SafetyData | undefined;
-  if (originData.origin && !suppressOrigin) {
-    originSafety = await getSafetyData(originData.origin.term_id, {
-      registry: claimTemplates,
-      trustedCircle,
-      whitelist: publisherWhitelist,
-      userAddress,
-      entity: 'site',
-      extendedIndex: EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
-    });
-  }
+  // The account and origin lanes share no data, so run them concurrently. WITHIN
+  // each phase, safety MUST resolve first because its surfaced term_ids feed the
+  // familiarity escape-hatch + the familiarity/self dedup; familiarity and self
+  // are mutually independent, so they run in parallel after safety.
+  const [accountLane, originLane] = await Promise.all([
+    (async () => {
+      // Safety read surface FIRST (critical reports, soft flags, provenance).
+      let safety: SafetyData | undefined;
+      if (accountData.account && !suppressAccount) {
+        safety = await getSafetyData(accountData.account.term_id, {
+          registry: claimTemplates,
+          trustedCircle,
+          whitelist: publisherWhitelist,
+          userAddress,
+          isContract: accountData.isContract,
+          extendedIndex: EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
+        });
+      }
 
-  // Term IDs already surfaced by the origin safety lane — excluded from the
-  // origin familiarity section so each claim has exactly one home.
-  const originSafetyTermIds = new Set<string>();
-  if (originSafety) {
-    for (const signal of [
-      ...originSafety.critical,
-      ...originSafety.warnings,
-      ...originSafety.provenance,
-    ]) {
-      originSafetyTermIds.add(signal.termId);
-    }
-  }
+      // Triple term_ids already surfaced by the safety lane (critical + warnings
+      // + provenance) — excluded from familiarity/self so each claim has one home.
+      const termIds = new Set<string>();
+      if (safety) {
+        for (const signal of [
+          ...safety.critical,
+          ...safety.warnings,
+          ...safety.provenance,
+        ]) {
+          termIds.add(signal.termId);
+        }
+      }
 
-  // Origin familiarity — trusted contacts (1-hop + 2-hop) with ANY claim about
-  // the dApp atom, with the safety-surfaced claims excluded.
-  let originNetworkFamiliarity: NetworkFamiliarity | undefined;
-  if (trustedCircle.length > 0 && originData.origin && !suppressOrigin) {
-    originNetworkFamiliarity = await getNetworkFamiliarity(
-      originData.origin.term_id,
-      trustedCircle,
-      new Set<string>(),
-      userAddress,
-      EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
-      originSafetyTermIds,
-      claimTemplates,
-    );
-  }
+      const [familiarity, selfClaims] = await Promise.all([
+        // Network familiarity (trusted contacts with ANY claim about this
+        // address). `has tag → trustworthy` surfaces here as a regular claim.
+        trustedCircle.length > 0 && accountData.account && !suppressAccount
+          ? getNetworkFamiliarity(
+              accountData.account.term_id,
+              trustedCircle,
+              new Set<string>(),
+              userAddress,
+              EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
+              termIds,
+              claimTemplates,
+            )
+          : Promise.resolve(undefined),
+        // The viewer's OWN staked claims ("Your take") — always surfaced back to
+        // the viewer, independent of the trusted circle.
+        userAddress && accountData.account && !suppressAccount
+          ? getSelfClaims(
+              accountData.account.term_id,
+              userAddress,
+              termIds,
+              claimTemplates,
+            )
+          : Promise.resolve(undefined),
+      ]);
 
-  // The viewer's OWN staked claims about the dApp origin ("Your take").
-  // Independent of the trusted circle so a personal signal on a domain (e.g. "I
-  // tagged this site trustworthy") surfaces on the primary insight. Safety-
-  // surfaced claims are excluded so each claim has exactly one home.
-  let originSelfClaims: SelfClaims | undefined;
-  if (userAddress && originData.origin && !suppressOrigin) {
-    originSelfClaims = await getSelfClaims(
-      originData.origin.term_id,
-      userAddress,
-      originSafetyTermIds,
-      claimTemplates,
-    );
-  }
+      return { safety, termIds, familiarity, selfClaims };
+    })(),
+    (async () => {
+      // Origin (dApp) safety read surface — same pipeline as the address, scoped
+      // to the URL/site claim vocabulary (entity 'site').
+      let safety: SafetyData | undefined;
+      if (originData.origin && !suppressOrigin) {
+        safety = await getSafetyData(originData.origin.term_id, {
+          registry: claimTemplates,
+          trustedCircle,
+          whitelist: publisherWhitelist,
+          userAddress,
+          entity: 'site',
+          extendedIndex: EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
+        });
+      }
+
+      const termIds = new Set<string>();
+      if (safety) {
+        for (const signal of [
+          ...safety.critical,
+          ...safety.warnings,
+          ...safety.provenance,
+        ]) {
+          termIds.add(signal.termId);
+        }
+      }
+
+      const [familiarity, selfClaims] = await Promise.all([
+        // Origin familiarity — trusted contacts (1-hop + 2-hop) with ANY claim
+        // about the dApp atom, with the safety-surfaced claims excluded.
+        trustedCircle.length > 0 && originData.origin && !suppressOrigin
+          ? getNetworkFamiliarity(
+              originData.origin.term_id,
+              trustedCircle,
+              new Set<string>(),
+              userAddress,
+              EXTENDED_NETWORK_ENABLED ? extendedIndex : undefined,
+              termIds,
+              claimTemplates,
+            )
+          : Promise.resolve(undefined),
+        // The viewer's OWN staked claims about the dApp origin ("Your take").
+        userAddress && originData.origin && !suppressOrigin
+          ? getSelfClaims(
+              originData.origin.term_id,
+              userAddress,
+              termIds,
+              claimTemplates,
+            )
+          : Promise.resolve(undefined),
+      ]);
+
+      return { safety, termIds, familiarity, selfClaims };
+    })(),
+  ]);
+
+  const accountSafety = accountLane.safety;
+  const safetyTermIds = accountLane.termIds;
+  const accountNetworkFamiliarity = accountLane.familiarity;
+  const accountSelfClaims = accountLane.selfClaims;
+
+  const originSafety = originLane.safety;
+  const originSafetyTermIds = originLane.termIds;
+  const originNetworkFamiliarity = originLane.familiarity;
+  const originSelfClaims = originLane.selfClaims;
 
   // Resolve the public-claims fetches now that the other lanes are done. Build
   // each subject's cross-lane exclude set — "claims you haven't seen" = every
