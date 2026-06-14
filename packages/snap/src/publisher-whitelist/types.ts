@@ -24,7 +24,7 @@ export type PublisherScope =
   | 'impersonation';
 
 /** A single whitelisted authority account. */
-export interface Publisher {
+export type Publisher = {
   /** Lowercase EVM address of the authority account. */
   address: string;
   /** Human-readable name (e.g. "ScamSniffer"). */
@@ -33,17 +33,17 @@ export interface Publisher {
   weight?: number;
   /** Report categories this authority covers. Empty/undefined = all. */
   scopes?: PublisherScope[];
-}
+};
 
 /** Shape returned by GET /atoms/publisher-whitelist on the Hive Mind API. */
-export interface PublisherWhitelistRegistry {
+export type PublisherWhitelistRegistry = {
   version: number;
   publishers: Publisher[];
-}
+};
 
 /** Wrapper stored in snap_manageState with a timestamp for TTL validation. */
-export interface CachedPublisherWhitelist {
+export type CachedPublisherWhitelist = {
   registry: PublisherWhitelistRegistry;
   /** Unix timestamp (ms) when this cache entry was written. */
   timestamp: number;
-}
+};

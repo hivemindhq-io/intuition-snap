@@ -20,6 +20,10 @@ const STATE_KEY = '_publisherWhitelist';
 /** TTL in seconds. Whitelist changes are rare and non-urgent. */
 const TTL_SECONDS = 3600; // 1 hour
 
+/**
+ *
+ * @param cached
+ */
 function isCacheValid(cached: CachedPublisherWhitelist): boolean {
   return Date.now() - cached.timestamp < TTL_SECONDS * 1000;
 }
@@ -56,6 +60,7 @@ export async function getPublisherWhitelistCache(): Promise<PublisherWhitelistRe
 
 /**
  * Stores a whitelist in snap state with the current timestamp.
+ * @param registry
  */
 export async function setPublisherWhitelistCache(
   registry: PublisherWhitelistRegistry,

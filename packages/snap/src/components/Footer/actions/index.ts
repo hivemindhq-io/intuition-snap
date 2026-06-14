@@ -16,4 +16,3 @@ export { CreateTrustTriple } from './CreateTrustTriple';
 export { StakePrompt } from './StakePrompt';
 export { CreateAlias } from './CreateAlias';
 export { ViewMore } from './ViewMore';
-

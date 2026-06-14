@@ -21,7 +21,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 
 /**
  * Schema version for the cached trust-circle payload. Bump this whenever the
- * *definition* of the trust circle changes so old entries are discarded.
+ * definition* of the trust circle changes so old entries are discarded.
  *
  * v2: migrated from `[account] has tag → trustworthy` to `[I] follow [account]`.
  * v3: cache-bust to force a clean refetch of the 1-hop seed set that the 2-hop
@@ -212,14 +212,19 @@ async function readExtendedState(): Promise<ExtendedNetworkState> {
   const state = (await snap.request({
     method: 'snap_manageState',
     params: { operation: 'get' },
-  })) as (Record<string, unknown> & { [EXTENDED_STATE_KEY]?: ExtendedNetworkState }) | null;
+  })) as
+    | (Record<string, unknown> & {
+        [EXTENDED_STATE_KEY]?: ExtendedNetworkState;
+      })
+    | null;
 
-  return (state?.[EXTENDED_STATE_KEY] as ExtendedNetworkState | undefined) ?? {};
+  return state?.[EXTENDED_STATE_KEY] ?? {};
 }
 
 /**
  * Reads the 1-hop cache `timestamp` for a viewer (the value the extended set is
  * derived from). Returns null when there is no valid 1-hop entry.
+ * @param userAddress
  */
 export async function getTrustedCircleTimestamp(
   userAddress: string,
@@ -295,7 +300,9 @@ export async function setExtendedNetworkCache(
       params: { operation: 'get' },
     })) as Record<string, unknown> | null;
 
-    const existingExt = (rootState?.[EXTENDED_STATE_KEY] as ExtendedNetworkState | undefined) ?? {};
+    const existingExt =
+      (rootState?.[EXTENDED_STATE_KEY] as ExtendedNetworkState | undefined) ??
+      {};
     const normalizedAddress = userAddress.toLowerCase();
 
     const newEntry: CachedExtendedNetwork = {
@@ -345,7 +352,9 @@ export async function clearExtendedNetworkCache(
 
     let newExt: ExtendedNetworkState = {};
     if (userAddress) {
-      const existingExt = (rootState[EXTENDED_STATE_KEY] as ExtendedNetworkState | undefined) ?? {};
+      const existingExt =
+        (rootState[EXTENDED_STATE_KEY] as ExtendedNetworkState | undefined) ??
+        {};
       const { [userAddress.toLowerCase()]: _removed, ...rest } = existingExt;
       newExt = rest;
     }
@@ -366,4 +375,3 @@ export async function clearExtendedNetworkCache(
     // Clear cache failure is non-critical, continue silently
   }
 }
-

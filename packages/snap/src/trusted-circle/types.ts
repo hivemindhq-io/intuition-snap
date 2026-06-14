@@ -10,19 +10,19 @@
 /**
  * A trusted contact with minimal display information.
  */
-export interface TrustedContact {
+export type TrustedContact = {
   /** The account's wallet address */
   accountId: string;
   /** Display label (address, ENS, or other identifier) */
   label: string;
   /** Shares staked as string (for sorting by stake amount, stored as string for JSON serialization) */
   shares?: string;
-}
+};
 
 /**
  * Cached trusted circle data with timestamp for TTL validation.
  */
-export interface CachedTrustedCircle {
+export type CachedTrustedCircle = {
   /** List of trusted contacts */
   contacts: TrustedContact[];
   /** Timestamp when cache was created (ms since epoch) */
@@ -34,33 +34,33 @@ export interface CachedTrustedCircle {
    * version are treated as invalid so stale pre-migration circles self-heal.
    */
   version?: number;
-}
+};
 
 /**
  * State structure stored via snap_manageState.
  * Keyed by user address for multi-account support.
  */
-export interface TrustedCircleState {
+export type TrustedCircleState = {
   /** Map of user address to their cached trusted circle */
   [userAddress: string]: CachedTrustedCircle;
-}
+};
 
 /**
  * Contacts from the trusted circle who have positions on a triple.
  * Used to display "Your Trust Circle" section.
  */
-export interface TrustedCirclePositions {
+export type TrustedCirclePositions = {
   /** Trusted contacts who staked FOR */
   forContacts: TrustedContact[];
   /** Trusted contacts who staked AGAINST */
   againstContacts: TrustedContact[];
-}
+};
 
 /**
  * A single claim (triple) that a familiar contact has a position on.
  * Used to show context like "tagged as DeFi Protocol".
  */
-export interface ClaimContext {
+export type ClaimContext = {
   /** Human-readable predicate label (e.g., "has tag") */
   predicateLabel: string;
   /** Human-readable object label (e.g., "DeFi Protocol") */
@@ -83,7 +83,7 @@ export interface ClaimContext {
    * anywhere on the subject) and is treated as `'secondary'` by renderers.
    */
   tier?: 'primary' | 'secondary';
-}
+};
 
 /**
  * A contact from the user's trust circle who has made any claim
@@ -92,7 +92,7 @@ export interface ClaimContext {
  * Displayed in the "Network Familiarity" section to show that
  * people the user trusts have interacted with this address.
  */
-export interface FamiliarContact {
+export type FamiliarContact = {
   /** The contact's wallet address */
   accountId: string;
   /** Display label (ENS name or truncated address) */
@@ -110,14 +110,14 @@ export interface FamiliarContact {
    * MIN_BRIDGES gate. Undefined for degree-1.
    */
   bridgeCount?: number;
-}
+};
 
 /**
  * Aggregated network familiarity data for an address.
  * Shows trusted contacts who have ANY claim about the address,
  * de-duplicated from the trust circle section.
  */
-export interface NetworkFamiliarity {
+export type NetworkFamiliarity = {
   /** 1-hop contacts (trust circle) with non-trustworthy claims */
   familiarContacts: FamiliarContact[];
   /** Total number of distinct claims about this address (for context) */
@@ -128,7 +128,7 @@ export interface NetworkFamiliarity {
    * mixed with `familiarContacts`. Absent/empty ⇒ no 2-hop subsection.
    */
   extendedContacts?: FamiliarContact[];
-}
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Self lane — the viewer's OWN claims about a subject.
@@ -145,20 +145,20 @@ export interface NetworkFamiliarity {
  *   - `'for'`     → the viewer holds a FOR position (they assert the claim),
  *   - `'against'` → the viewer holds an AGAINST position (they dispute it).
  */
-export interface SelfClaim extends ClaimContext {
+export type SelfClaim = {
   /** Which side the viewer staked on. */
   stance: 'for' | 'against';
-}
+} & ClaimContext;
 
 /**
  * The viewer's own claims about a subject (address or origin). Absent/empty ⇒
  * the viewer has no staked opinion on the subject and the "Your take" block is
  * not rendered.
  */
-export interface SelfClaims {
+export type SelfClaims = {
   /** The viewer's staked claims, ordered by total market cap (desc). */
   claims: SelfClaim[];
-}
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Extended network (2-hop "friend-of-a-friend") — see docs/extended-network-spec.md
@@ -177,7 +177,7 @@ export type TrustDegree = 1 | 2;
  * A 2-hop contact: an account followed by one or more of the viewer's direct
  * follows, but NOT followed by the viewer directly (and not the viewer).
  */
-export interface ExtendedContact {
+export type ExtendedContact = {
   /** The FoaF's wallet address */
   accountId: string;
   /** Display label (ENS name or truncated hex address) */
@@ -187,20 +187,20 @@ export interface ExtendedContact {
    * `via.length` is the bridge count — the only trust weight for degree 2.
    */
   via: string[];
-}
+};
 
 /** Resolved 2-hop layer for a viewer (excludes self + all direct follows). */
-export interface ExtendedNetwork {
+export type ExtendedNetwork = {
   /** FoaF contacts, sorted by bridge count (via.length) desc. */
   contacts: ExtendedContact[];
-}
+};
 
 /**
  * Cached extended network with TTL + schema version, tied to the 1-hop
  * timestamp it was derived from so it self-invalidates when the seed set
  * (the 1-hop circle) changes.
  */
-export interface CachedExtendedNetwork {
+export type CachedExtendedNetwork = {
   contacts: ExtendedContact[];
   /** When this extended set was computed (ms since epoch). */
   timestamp: number;
@@ -211,12 +211,12 @@ export interface CachedExtendedNetwork {
   derivedFrom: number;
   /** Bumped when the *definition* of the extended layer changes. */
   version?: number;
-}
+};
 
 /**
  * State structure for extended-network cache, stored via snap_manageState under
  * a key prefix separate from the 1-hop circle. Keyed by lowercased user address.
  */
-export interface ExtendedNetworkState {
+export type ExtendedNetworkState = {
   [userAddress: string]: CachedExtendedNetwork;
-}
+};

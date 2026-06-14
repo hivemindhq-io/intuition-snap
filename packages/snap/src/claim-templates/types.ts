@@ -11,7 +11,7 @@
  * @module claim-templates/types
  */
 
-export interface ClaimSlot {
+export type ClaimSlot = {
   type: 'detected' | 'fixed' | 'user-input';
   atomRef?: string;
   label?: string;
@@ -19,9 +19,9 @@ export interface ClaimSlot {
   placeholder?: string;
   inputLabel?: string;
   schemaType?: string;
-}
+};
 
-export interface ClaimTemplate {
+export type ClaimTemplate = {
   id: string;
   label: string;
   description: string;
@@ -32,9 +32,9 @@ export interface ClaimTemplate {
   subject: ClaimSlot;
   predicate: ClaimSlot;
   object: ClaimSlot;
-}
+};
 
-export interface ClaimTemplateMapping {
+export type ClaimTemplateMapping = {
   id: string;
   name: string;
   match: {
@@ -43,7 +43,7 @@ export interface ClaimTemplateMapping {
     labelPatterns?: string[];
   };
   potentialTriples: ClaimTemplate[];
-}
+};
 
 /** Placement tier for a whitelisted familiarity claim. */
 export type FamiliarityTier = 'primary' | 'secondary';
@@ -56,14 +56,14 @@ export type FamiliarityTier = 'primary' | 'secondary';
  * self-describing predicate (e.g. `vouchFor`). `tier` is the placement ceiling
  * (`primary` = inline-eligible at 1-hop; `secondary` = always demoted to More info).
  */
-export interface FamiliarityVocabEntry {
+export type FamiliarityVocabEntry = {
   predicate: string;
   object: string;
   tier: FamiliarityTier;
-}
+};
 
 /** Shape returned by GET /atoms/claim-templates on the Hive Mind API. */
-export interface ClaimTemplateRegistry {
+export type ClaimTemplateRegistry = {
   version: number;
   /** Named predicate term IDs (e.g. { reportedFor: "0x…" }). */
   predicates: Record<string, string>;
@@ -82,11 +82,11 @@ export interface ClaimTemplateRegistry {
    */
   familiarityVocab?: FamiliarityVocabEntry[];
   templates: ClaimTemplateMapping[];
-}
+};
 
 /** Wrapper stored in snap_manageState with a timestamp for TTL validation. */
-export interface CachedClaimTemplates {
+export type CachedClaimTemplates = {
   registry: ClaimTemplateRegistry;
   /** Unix timestamp (ms) when this cache entry was written. */
   timestamp: number;
-}
+};

@@ -37,14 +37,18 @@ export type CurveVault = {
  *
  * @param vaults - The multi-curve vaults array (may be undefined/empty)
  * @returns The total market cap as a wei-scale BigInt string. Returns "0"
- *   when the array is missing or empty.
+ * when the array is missing or empty.
  */
 export const sumMarketCap = (vaults?: CurveVault[] | null): string => {
-  if (!vaults || vaults.length === 0) return '0';
+  if (!vaults || vaults.length === 0) {
+    return '0';
+  }
   let total = 0n;
   for (const v of vaults) {
     const raw = v?.market_cap;
-    if (raw === null || raw === undefined) continue;
+    if (raw === null || raw === undefined) {
+      continue;
+    }
     try {
       total += BigInt(raw as string);
     } catch {
@@ -64,13 +68,19 @@ export const sumMarketCap = (vaults?: CurveVault[] | null): string => {
  * @returns The summed position count. Returns 0 when the array is missing or empty.
  */
 export const sumPositionCount = (vaults?: CurveVault[] | null): number => {
-  if (!vaults || vaults.length === 0) return 0;
+  if (!vaults || vaults.length === 0) {
+    return 0;
+  }
   let total = 0;
   for (const v of vaults) {
     const raw = v?.position_count;
-    if (raw === null || raw === undefined) continue;
+    if (raw === null || raw === undefined) {
+      continue;
+    }
     const n = typeof raw === 'number' ? raw : Number(raw);
-    if (Number.isFinite(n)) total += n;
+    if (Number.isFinite(n)) {
+      total += n;
+    }
   }
   return total;
 };
@@ -90,6 +100,8 @@ export const sumPositionCount = (vaults?: CurveVault[] | null): number => {
 export const linearVault = <T extends CurveVault>(
   vaults?: T[] | null,
 ): T | undefined => {
-  if (!vaults || vaults.length === 0) return undefined;
+  if (!vaults || vaults.length === 0) {
+    return undefined;
+  }
   return vaults.find((v) => String(v?.curve_id ?? '') === '1') ?? vaults[0];
 };

@@ -19,8 +19,8 @@ import {
   BLACKLISTED_TERM_IDS,
   FAMILIARITY_VOCAB,
 } from '../config';
-import type { ClaimTemplateRegistry, FamiliarityVocabEntry } from './types';
 import { getClaimTemplatesCache, setClaimTemplatesCache } from './cache';
+import type { ClaimTemplateRegistry, FamiliarityVocabEntry } from './types';
 
 /**
  * Offline fallback registry. Carries the safety + provenance vocabulary the

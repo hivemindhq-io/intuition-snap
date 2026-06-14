@@ -10,11 +10,11 @@
  */
 
 import { chainConfig } from '../config';
-import type { PublisherWhitelistRegistry } from './types';
 import {
   getPublisherWhitelistCache,
   setPublisherWhitelistCache,
 } from './cache';
+import type { PublisherWhitelistRegistry } from './types';
 
 /** Safe empty default returned when the API is unreachable or cache is empty. */
 const EMPTY: PublisherWhitelistRegistry = {

@@ -17,6 +17,10 @@ const STATE_KEY = '_claimTemplates';
 /** TTL in seconds. Template changes are rare and non-urgent. */
 const TTL_SECONDS = 3600; // 1 hour
 
+/**
+ *
+ * @param cached
+ */
 function isCacheValid(cached: CachedClaimTemplates): boolean {
   return Date.now() - cached.timestamp < TTL_SECONDS * 1000;
 }
@@ -53,6 +57,7 @@ export async function getClaimTemplatesCache(): Promise<ClaimTemplateRegistry | 
 
 /**
  * Stores a registry in snap state with the current timestamp.
+ * @param registry
  */
 export async function setClaimTemplatesCache(
   registry: ClaimTemplateRegistry,

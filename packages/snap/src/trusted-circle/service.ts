@@ -9,6 +9,16 @@
  */
 
 import { keccak_256 } from '@noble/hashes/sha3';
+
+import type { ClaimTemplateRegistry } from '../claim-templates';
+import type { ChainConfig } from '../config';
+import {
+  chainConfig,
+  MAX_SEED_FOLLOWS,
+  MIN_BRIDGES,
+  BLACKLISTED_TERM_IDS,
+  FAMILIARITY_VOCAB,
+} from '../config';
 import {
   graphQLQuery,
   getUserTrustedCircleQuery,
@@ -18,21 +28,12 @@ import {
   getSelfClaimsAboutAtomQuery,
 } from '../queries';
 import {
-  chainConfig,
-  ChainConfig,
-  MAX_SEED_FOLLOWS,
-  MIN_BRIDGES,
-  BLACKLISTED_TERM_IDS,
-  FAMILIARITY_VOCAB,
-} from '../config';
-import {
   getTrustedCircleCache,
   setTrustedCircleCache,
   getTrustedCircleTimestamp,
   getExtendedNetworkCache,
   setExtendedNetworkCache,
 } from './cache';
-import type { ClaimTemplateRegistry } from '../claim-templates';
 import type {
   TrustedContact,
   TrustedCirclePositions,
@@ -50,7 +51,7 @@ import type {
  * The followed account is the OBJECT of the `[I] follow [target]` triple.
  * Note: Path is positions → term → triple (not positions → triple directly).
  */
-interface TrustedCircleQueryResponse {
+type TrustedCircleQueryResponse = {
   data: {
     positions: {
       term: {
@@ -64,13 +65,14 @@ interface TrustedCircleQueryResponse {
       };
     }[];
   };
-}
+};
 
 /**
  * Checks if a string is a valid EVM address.
+ * @param value
  */
 function isEvmAddress(value: string | null | undefined): value is string {
-  return !!value && /^0x[a-fA-F0-9]{40}$/i.test(value);
+  return Boolean(value) && /^0x[a-fA-F0-9]{40}$/i.test(value);
 }
 
 /**
@@ -135,10 +137,14 @@ async function fetchTrustedCircleFromAPI(
 
   for (const position of positions) {
     const triple = position.term?.triple;
-    if (!triple) continue; // Skip positions that aren't on triples
+    if (!triple) {
+      continue;
+    } // Skip positions that aren't on triples
 
     const { object } = triple;
-    if (!object) continue;
+    if (!object) {
+      continue;
+    }
 
     // Extract wallet address: prefer data if it's an EVM address, else try label
     const walletAddress = isEvmAddress(object.data)
@@ -147,7 +153,9 @@ async function fetchTrustedCircleFromAPI(
       ? object.label
       : null;
 
-    if (!walletAddress) continue;
+    if (!walletAddress) {
+      continue;
+    }
 
     // Store the canonical EIP-55 checksummed address (the form the indexer uses).
     // The map key stays lowercased purely for de-duplication.
@@ -203,7 +211,7 @@ export async function getTrustedCircle(
  * Each row is a follow position held by one of the viewer's direct follows;
  * `account_id` is the BRIDGE and the triple's OBJECT is the FoaF.
  */
-interface ExtendedNetworkQueryResponse {
+type ExtendedNetworkQueryResponse = {
   data: {
     positions: {
       account_id: string;
@@ -218,7 +226,7 @@ interface ExtendedNetworkQueryResponse {
       } | null;
     }[];
   };
-}
+};
 
 /**
  * Fetches the viewer's extended network (2-hop follows) from GraphQL.
@@ -249,10 +257,14 @@ async function fetchExtendedNetworkFromAPI(
   const seeds: string[] = [];
   for (const contact of directCircle) {
     const canonical = toChecksum(contact.accountId);
-    if (!canonical || directSet.has(canonical)) continue;
+    if (!canonical || directSet.has(canonical)) {
+      continue;
+    }
     directSet.add(canonical);
     seeds.push(canonical);
-    if (seeds.length >= MAX_SEED_FOLLOWS) break;
+    if (seeds.length >= MAX_SEED_FOLLOWS) {
+      break;
+    }
   }
 
   if (seeds.length === 0) {
@@ -277,13 +289,19 @@ async function fetchExtendedNetworkFromAPI(
 
   for (const position of positions) {
     const triple = position.term?.triple;
-    if (!triple) continue;
+    if (!triple) {
+      continue;
+    }
 
     const { object } = triple;
-    if (!object) continue;
+    if (!object) {
+      continue;
+    }
 
     const bridge = toChecksum(position.account_id);
-    if (!bridge) continue;
+    if (!bridge) {
+      continue;
+    }
 
     // Extract the FoaF wallet address (data first, then label) and canonicalize.
     const foaf = toChecksum(
@@ -293,11 +311,17 @@ async function fetchExtendedNetworkFromAPI(
         ? object.label
         : null,
     );
-    if (!foaf) continue;
+    if (!foaf) {
+      continue;
+    }
 
     // Exclude the viewer and anyone already in the 1-hop circle.
-    if (foaf === viewer) continue;
-    if (directSet.has(foaf)) continue;
+    if (foaf === viewer) {
+      continue;
+    }
+    if (directSet.has(foaf)) {
+      continue;
+    }
 
     const existing = foafMap.get(foaf);
     if (existing) {
@@ -392,14 +416,14 @@ export function indexExtendedNetwork(net: ExtendedNetwork): {
 /**
  * Position data from a triple query.
  */
-interface PositionWithAccount {
+type PositionWithAccount = {
   account_id: string;
   shares?: string;
   account?: {
     id: string;
     label: string;
   };
-}
+};
 
 /**
  * Filters positions to only include trusted contacts.
@@ -434,7 +458,9 @@ export function getTrustedContactsWithPositions(
   const forContacts: TrustedContact[] = [];
   for (const position of forPositions) {
     const accountId = position.account_id?.toLowerCase();
-    if (accountId === normalizedUserAddress) continue;
+    if (accountId === normalizedUserAddress) {
+      continue;
+    }
     const isTrusted = accountId && trustedIds.has(accountId);
     if (isTrusted) {
       forContacts.push({
@@ -452,7 +478,9 @@ export function getTrustedContactsWithPositions(
   const againstContacts: TrustedContact[] = [];
   for (const position of againstPositions) {
     const accountId = position.account_id?.toLowerCase();
-    if (accountId === normalizedUserAddress) continue;
+    if (accountId === normalizedUserAddress) {
+      continue;
+    }
     const isTrusted = accountId && trustedIds.has(accountId);
     if (isTrusted) {
       againstContacts.push({
@@ -470,16 +498,24 @@ export function getTrustedContactsWithPositions(
   forContacts.sort((a, b) => {
     const sharesA = BigInt(a.shares ?? '0');
     const sharesB = BigInt(b.shares ?? '0');
-    if (sharesB > sharesA) return 1;
-    if (sharesB < sharesA) return -1;
+    if (sharesB > sharesA) {
+      return 1;
+    }
+    if (sharesB < sharesA) {
+      return -1;
+    }
     return 0;
   });
 
   againstContacts.sort((a, b) => {
     const sharesA = BigInt(a.shares ?? '0');
     const sharesB = BigInt(b.shares ?? '0');
-    if (sharesB > sharesA) return 1;
-    if (sharesB < sharesA) return -1;
+    if (sharesB > sharesA) {
+      return 1;
+    }
+    if (sharesB < sharesA) {
+      return -1;
+    }
     return 0;
   });
 
@@ -502,7 +538,7 @@ function formatAddress(address: string): string {
 /**
  * Response shape from the "all claims about atom" query.
  */
-interface AllClaimsResponse {
+type AllClaimsResponse = {
   data: {
     triples: {
       term_id: string;
@@ -514,7 +550,7 @@ interface AllClaimsResponse {
       counter_positions: { account_id: string; shares: string }[];
     }[];
   };
-}
+};
 
 /**
  * Sentinel object key meaning "match any object" for a self-describing predicate
@@ -628,9 +664,11 @@ function resolveFamiliarityTier(
  * @param alreadyDisplayedIds - Set of account IDs already shown in TrustedCircle section (normalized lowercase)
  * @param userAddress - The current user's address to exclude
  * @param extendedIndex - Optional 2-hop lookup (FoaF ids + per-contact bridges)
+ * @param extendedIndex.ids
  * @param excludeTermIds - Optional set of triple term_ids already surfaced in the
  * safety section. Matching claims are skipped so each claim has exactly one home
  * (Opt 3 dedup); contacts left with zero claims are naturally dropped.
+ * @param extendedIndex.byAddress
  * @param registry - Optional claim-template registry. When supplied, each claim's
  * `predicate_id` is resolved to its first-class key (e.g. 'hasTag') so the UI can
  * render natural-language phrasing. Absent ⇒ claims fall back to verbatim labels.
@@ -719,7 +757,11 @@ export async function getNetworkFamiliarity(
       }
     >();
 
-    /** De-dupes a claim into a contact's running claim list. */
+    /**
+     * De-dupes a claim into a contact's running claim list.
+     * @param claims
+     * @param claim
+     */
     const pushClaim = (claims: ClaimContext[], claim: ClaimContext): void => {
       const hasClaim = claims.some(
         (c) =>
@@ -734,7 +776,9 @@ export async function getNetworkFamiliarity(
     for (const triple of triples) {
       // Dedup (Opt 3): this claim already lives in the safety surface, so skip it
       // here to avoid showing the same triple in two places.
-      if (excludeTermIds?.has(triple.term_id)) continue;
+      if (excludeTermIds?.has(triple.term_id)) {
+        continue;
+      }
 
       // Suppress blacklisted atoms (non-canonical / duplicate). Match on the
       // predicate, object, or triple term ID so one list can kill a rogue
@@ -781,8 +825,12 @@ export async function getNetworkFamiliarity(
       for (const accountId of allPositionAccounts) {
         const normalized = accountId.toLowerCase();
 
-        if (normalized === normalizedUserAddress) continue;
-        if (alreadyDisplayedIds.has(normalized)) continue;
+        if (normalized === normalizedUserAddress) {
+          continue;
+        }
+        if (alreadyDisplayedIds.has(normalized)) {
+          continue;
+        }
 
         // 1-hop: direct follow (trust circle).
         if (trustedIds.has(normalized)) {
@@ -806,7 +854,9 @@ export async function getNetworkFamiliarity(
         const canonicalAccount = toChecksum(accountId);
         if (canonicalAccount && extendedIndex?.ids.has(canonicalAccount)) {
           const ext = extendedIndex.byAddress.get(canonicalAccount);
-          if (!ext || ext.via.length < MIN_BRIDGES) continue;
+          if (!ext || ext.via.length < MIN_BRIDGES) {
+            continue;
+          }
 
           const existing = extendedClaimsMap.get(canonicalAccount);
           if (existing) {
@@ -864,7 +914,7 @@ export async function getNetworkFamiliarity(
 /**
  * Response shape from the "self claims about atom" query.
  */
-interface SelfClaimsResponse {
+type SelfClaimsResponse = {
   data: {
     triples: {
       term_id: string;
@@ -876,7 +926,7 @@ interface SelfClaimsResponse {
       user_counter_position: { shares: string }[];
     }[];
   };
-}
+};
 
 /**
  * Whether a shares array carries a non-zero stake. The query already filters to
@@ -1008,7 +1058,7 @@ export async function getSelfClaims(
 /**
  * Response shape from the atoms for addresses query.
  */
-interface AtomsForAddressesResponse {
+type AtomsForAddressesResponse = {
   data: {
     atoms: {
       term_id: string;
@@ -1017,7 +1067,7 @@ interface AtomsForAddressesResponse {
       image: string | null;
     }[];
   };
-}
+};
 
 /**
  * Enriches trusted contacts with resolved labels (ENS names, etc.).

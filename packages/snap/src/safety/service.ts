@@ -103,7 +103,7 @@ type SafetyQueryResponse = {
 };
 
 const isEvmAddress = (value: string | null | undefined): value is string =>
-  !!value && /^0x[a-fA-F0-9]{40}$/u.test(value);
+  Boolean(value) && /^0x[a-fA-F0-9]{40}$/u.test(value);
 
 const formatAddress = (address: string): string =>
   isEvmAddress(address)
