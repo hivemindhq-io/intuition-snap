@@ -29,22 +29,41 @@ export type UserPositionData = {
 // ============================================================================
 
 /**
- * Reasons why address classification may be uncertain.
- * Used to track why we couldn't definitively determine if address is EOA or contract.
+ * Reasons why address classification may be uncertain. Used to track why we
+ * couldn't definitively determine if an address is an EOA or contract.
+ *
+ * `eth_getCode_failed`: an `eth_getCode` RPC call failed (transport/decode).
+ * `chain_not_added`: the tx's chain isn't added to MetaMask, so we could not
+ * switch to it to classify on the address's actual chain.
+ * `non_evm`: the tx chain is non-EVM (e.g. Solana); `eth_getCode` doesn't apply.
  */
-export type ClassificationFailureReason = 'eth_getCode_failed';
+export type ClassificationFailureReason =
+  | 'eth_getCode_failed'
+  | 'chain_not_added'
+  | 'non_evm';
+
+/**
+ * How a definite classification was reached. Used for logging/diagnostics so we
+ * can tell at a glance which path produced the verdict.
+ *
+ * `calldata`: transaction carried non-empty calldata (a contract call).
+ * `tx_chain`: `eth_getCode` on the tx's actual chain (post switch).
+ * `api`: the Hive Mind multi-chain contract-status proxy.
+ */
+export type ClassificationSource = 'calldata' | 'tx_chain' | 'api';
 
 /**
  * Classification result indicating whether an address is an EOA or contract.
- * Includes certainty level to handle cases where eth_getCode fails.
+ * Includes certainty level to handle cases where we can't verify.
  *
- * - definite EOA: eth_getCode returned 0x (no bytecode)
- * - definite contract: transaction has data OR eth_getCode returned bytecode
- * - uncertain: eth_getCode failed, we don't know for sure
+ * definite EOA: bytecode resolved to no code / 7702 / smart-account.
+ * definite contract: transaction has calldata OR bytecode is a real contract.
+ * uncertain: we couldn't verify (RPC failed, chain not added, or non-EVM); the
+ * `reason` distinguishes those cases so the UI can message accurately.
  */
 export type AddressClassification =
-  | { type: 'eoa'; certainty: 'definite' }
-  | { type: 'contract'; certainty: 'definite' }
+  | { type: 'eoa'; certainty: 'definite'; source?: ClassificationSource }
+  | { type: 'contract'; certainty: 'definite'; source?: ClassificationSource }
   | {
       type: 'unknown';
       certainty: 'uncertain';

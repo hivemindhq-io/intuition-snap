@@ -110,19 +110,20 @@ export const AccountLabel = ({
  * smart contract or a regular wallet (EOA), so the user can tell at a glance
  * what kind of thing they are interacting with.
  *
- * The label is softened when classification is uncertain (`eth_getCode` failed
- * and the API couldn't decide): in that case we show "Likely smart contract"
- * rather than overclaiming a definite result. A definite EOA reads as "Wallet
- * (EOA)" and a definite contract as "Smart contract".
+ * Definite verdicts read as "Smart contract" or "Wallet (EOA)". When we could
+ * NOT verify, we never overclaim: a non-EVM chain hides the row entirely (a
+ * contract/EOA verdict is meaningless there), and an EVM chain we couldn't
+ * reach (RPC failed, or the chain isn't added to MetaMask) shows a neutral
+ * "Couldn't verify on this network" instead of guessing.
  *
- * Note: a definite contract here is most often inferred from the transaction
- * carrying calldata (a contract call), not from confirmed bytecode — but for
- * the user the meaningful fact is "this is a contract interaction", which the
- * calldata reliably establishes.
+ * Note: a definite contract is often inferred from the transaction carrying
+ * calldata (a contract call) rather than confirmed bytecode — but for the user
+ * the meaningful fact is "this is a contract interaction", which calldata
+ * reliably establishes.
  *
  * @param props - Props.
  * @param props.classification - The address classification result.
- * @returns A single labeled row describing the account type.
+ * @returns A labeled row describing the account type, or null when hidden.
  */
 export const AccountTypeBadge = ({
   classification,
@@ -143,11 +144,16 @@ export const AccountTypeBadge = ({
       </Row>
     );
   }
-  // Uncertain: eth_getCode failed and the multi-chain API couldn't decide. Don't
-  // overclaim — present it as a best guess.
+  // Uncertain. On a non-EVM chain the contract/EOA distinction doesn't apply at
+  // all, so hide the row rather than show a confusing label.
+  if (classification.reason === 'non_evm') {
+    return null;
+  }
+  // EVM chain we couldn't classify (RPC failed or chain not added to MetaMask).
+  // Be honest about the gap instead of defaulting to "likely a contract".
   return (
     <Row label="Account type">
-      <Text color="muted">Likely smart contract</Text>
+      <Text color="muted">Couldn't verify on this network</Text>
     </Row>
   );
 };

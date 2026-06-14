@@ -1,3 +1,6 @@
+import type { ChainId, Transaction } from '@metamask/snaps-sdk';
+
+import { classifyBytecode } from './bytecode';
 import { type ChainConfig, chainConfig } from './config';
 import {
   getListWithHighestStakeQuery,
@@ -7,14 +10,14 @@ import {
 } from './queries';
 import { sumMarketCap } from './term-stats';
 import {
-  Account,
   AccountType,
-  TripleWithPositions,
-  AddressClassification,
-  AlternateTrustData,
+  type Account,
+  type TripleWithPositions,
+  type AddressClassification,
+  type ClassificationFailureReason,
+  type AlternateTrustData,
 } from './types';
 import { addressToCaip10 } from './util';
-import { ChainId, Transaction } from '@metamask/snaps-sdk';
 
 export type GetAccountDataResult = {
   account: Account | null;
@@ -25,19 +28,186 @@ export type GetAccountDataResult = {
   alternateTrustData: AlternateTrustData;
 };
 
-/** Timeout for the contract-status API proxy call. The Snap blocks the
- * onTransaction UI on classification, so keep this tight. */
+/**
+ * Timeout for the contract-status API proxy call. The Snap blocks the
+ * onTransaction UI on classification, so keep this tight.
+ */
 const CONTRACT_STATUS_API_TIMEOUT_MS = 4000;
+
+/**
+ * Timeout for provider RPC calls (`wallet_switchEthereumChain` + `eth_getCode`)
+ * and the direct Intuition `eth_getCode` fallback. `onTransaction` blocks the
+ * insight panel on classification, so a hung/slow RPC must not stall the UI.
+ */
+const PROVIDER_RPC_TIMEOUT_MS = 4000;
+
+/** Prefix for all classification console logs so they're easy to filter. */
+const LOG = '[hivemind:isContract]';
+
+/**
+ * Sentinel thrown by {@link withTimeout} when the wrapped promise doesn't settle
+ * in time. Lets callers distinguish a timeout from a genuine RPC error.
+ */
+export class TimeoutError extends Error {
+  constructor(message = 'Operation timed out') {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+/**
+ * Races a promise against a timeout. The underlying provider call cannot be
+ * aborted (the `ethereum` provider has no abort signal), so on timeout we stop
+ * waiting and let the in-flight request resolve into the void — the classifier
+ * degrades to a fallback path rather than blocking the insight UI indefinitely.
+ *
+ * @param promise - The promise to guard.
+ * @param timeoutMs - Max time to wait before rejecting with {@link TimeoutError}.
+ * @returns The resolved value, or rejects with {@link TimeoutError} on timeout.
+ */
+export const withTimeout = async <Value,>(
+  promise: Promise<Value>,
+  timeoutMs: number,
+): Promise<Value> => {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new TimeoutError()), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    // @ts-expect-error - assigned synchronously inside the Promise executor.
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * Parses a CAIP-2 chain id (e.g. `eip155:1`, `solana:5eykt4...`) into its
+ * namespace + reference. Returns `null` for malformed input.
+ *
+ * @param chainId - The CAIP-2 chain id from `onTransaction`.
+ * @returns The `{ namespace, reference }` pair, or null if unparseable.
+ */
+export const parseCaip2 = (
+  chainId: string,
+): { namespace: string; reference: string } | null => {
+  const [namespace, reference] = chainId.split(':');
+  if (!namespace || !reference) {
+    return null;
+  }
+  return { namespace, reference };
+};
+
+/**
+ * The `0x`-prefixed hex chain id MetaMask expects for
+ * `wallet_switchEthereumChain`, derived from a CAIP-2 `eip155:<decimal>` id.
+ * Returns `null` for non-eip155 (non-EVM) namespaces or malformed input.
+ *
+ * @param chainId - The CAIP-2 chain id from `onTransaction`.
+ * @returns The hex chain id (e.g. `0x1`), or null when not EVM.
+ */
+export const caip2ToHexChainId = (chainId: string): string | null => {
+  const parsed = parseCaip2(chainId);
+  if (!parsed || parsed.namespace !== 'eip155') {
+    return null;
+  }
+  const asNumber = Number(parsed.reference);
+  if (!Number.isInteger(asNumber) || asNumber <= 0) {
+    return null;
+  }
+  return `0x${asNumber.toString(16)}`;
+};
+
+/**
+ * Result of attempting classification on the transaction's actual chain.
+ */
+type TxChainClassification =
+  | { ok: true; isContract: boolean }
+  | { ok: false; reason: ClassificationFailureReason };
+
+/**
+ * Classifies `destinationAddress` on the transaction's ACTUAL chain.
+ *
+ * Uses the `ethereum` provider global (requires `endowment:ethereum-provider`):
+ * switches the Snap's own network context to the tx chain via
+ * `wallet_switchEthereumChain` (auto-approved for Snaps), then reads
+ * `eth_getCode` and applies the canonical {@link classifyBytecode} rule. The
+ * Snap's network switch is isolated per-origin and does NOT change the user's
+ * globally-selected wallet network.
+ *
+ * Works for ANY EVM chain the user has added to MetaMask (custom chains
+ * included).
+ *
+ * @param destinationAddress - The transaction destination address.
+ * @param hexChainId - The `0x`-prefixed hex chain id to switch to.
+ * @returns `{ ok: true, isContract }` on a definite verdict, or
+ * `{ ok: false, reason }` when the chain isn't added or an RPC error occurred.
+ */
+const classifyOnTxChain = async (
+  destinationAddress: string,
+  hexChainId: string,
+): Promise<TxChainClassification> => {
+  // `ethereum` is only defined when the endowment is granted. Guard so a
+  // missing endowment degrades gracefully to the fallback path.
+  if (typeof ethereum === 'undefined') {
+    console.log(`${LOG} ethereum provider unavailable (endowment missing)`);
+    return { ok: false, reason: 'eth_getCode_failed' };
+  }
+
+  try {
+    await withTimeout(
+      ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: hexChainId }],
+      }),
+      PROVIDER_RPC_TIMEOUT_MS,
+    );
+  } catch (error) {
+    // 4902 = chain not added to MetaMask. Any switch failure (or timeout) means
+    // we cannot read code on the tx chain; surface as "couldn't verify on this
+    // network".
+    console.log(
+      `${LOG} wallet_switchEthereumChain failed for ${hexChainId} — chain likely not added (or timed out)`,
+      error,
+    );
+    return { ok: false, reason: 'chain_not_added' };
+  }
+
+  try {
+    const code = await withTimeout(
+      ethereum.request<string>({
+        method: 'eth_getCode',
+        params: [destinationAddress, 'latest'],
+      }),
+      PROVIDER_RPC_TIMEOUT_MS,
+    );
+    const isContract = classifyBytecode(code ?? '0x');
+    console.log(
+      `${LOG} tx-chain eth_getCode on ${hexChainId}: codeLen=${
+        (code ?? '0x').length
+      } -> ${isContract ? 'contract' : 'eoa'}`,
+    );
+    return { ok: true, isContract };
+  } catch (error) {
+    console.log(
+      `${LOG} tx-chain eth_getCode failed (or timed out) on ${hexChainId}`,
+      error,
+    );
+    return { ok: false, reason: 'eth_getCode_failed' };
+  }
+};
 
 /**
  * Multi-chain contract-status check via the Hive Mind API proxy.
  *
  * The proxy fans out `eth_getCode` across Ethereum / Base / Intuition (Alchemy
  * for ETH/Base, keys stay server-side) and applies the canonical classification
- * rule (7702 + smart-account aware). Returns:
- *   - `true`  : real contract on at least one chain
- *   - `false` : EOA / 7702 / smart-account on all answered chains
- *   - `null`  : API unreachable or every chain RPC failed (caller falls back)
+ * rule (7702 + smart-account aware). Returns `true` for a real contract on at
+ * least one chain, `false` for EOA / 7702 / smart-account on all answered
+ * chains, or `null` when the API is unreachable / every chain RPC failed.
+ *
+ * @param destinationAddress - The transaction destination address.
+ * @returns The contract status, or null when undecided.
  */
 const fetchContractStatusFromApi = async (
   destinationAddress: string,
@@ -61,8 +231,14 @@ const fetchContractStatusFromApi = async (
       contractChainId: number | null;
     };
 
+    console.log(
+      `${LOG} api contract-status: isContract=${String(
+        data.isContract,
+      )} chain=${String(data.contractChainId)}`,
+    );
     return data.isContract;
-  } catch {
+  } catch (error) {
+    console.log(`${LOG} api contract-status failed`, error);
     return null;
   } finally {
     clearTimeout(timer);
@@ -70,66 +246,90 @@ const fetchContractStatusFromApi = async (
 };
 
 /**
- * Classifies an address as EOA, contract, or unknown.
- * Tracks certainty level so we can handle uncertain cases appropriately.
+ * Classifies an address as EOA, contract, or unknown, tracking certainty.
  *
- * For empty-calldata transactions we first ask the Hive Mind API's multi-chain
- * contract-status proxy (Ethereum / Base / Intuition via Alchemy). On any API
- * failure we fall back to a direct `eth_getCode` against the configured
- * Intuition chain, preserving the prior single-chain behavior.
+ * Resolution order (first definite verdict wins):
+ * 1. Non-empty calldata: definite contract (a contract call).
+ * 2. Non-EVM tx chain: uncertain (`non_evm`); eth_getCode doesn't apply.
+ * 3. Tx chain's own RPC: `wallet_switchEthereumChain` + `eth_getCode` on the
+ * transaction's ACTUAL chain (works for any user-added custom chain).
+ * 4. Hive Mind API proxy: multi-chain contract-status (ETH/Base/Intuition).
  *
- * The transaction's chain is irrelevant for trust lookups - we always resolve
- * against our configured chain because that's where trust data lives.
+ * When the tx chain isn't added to MetaMask we cannot switch to it; we still
+ * try the API fallback, but if it also can't decide we preserve the
+ * `chain_not_added` reason so the UI can message accurately rather than
+ * overclaiming. The transaction's chain is irrelevant for trust lookups — those
+ * always resolve against the configured Intuition chain where trust data lives.
+ *
+ * @param destinationAddress - The transaction destination address.
+ * @param transactionData - The transaction calldata (`0x` when empty).
+ * @param chainId - The transaction's CAIP-2 chain id (e.g. `eip155:1`).
+ * @returns The address classification with certainty + source/reason.
  */
-const classifyAddress = async (
+export const classifyAddress = async (
   destinationAddress: string,
   transactionData: string,
+  chainId: string,
 ): Promise<AddressClassification> => {
-  // If transaction has data, it's definitely a contract interaction
+  console.log(
+    `${LOG} classify start: to=${destinationAddress} chain=${chainId} hasCalldata=${
+      transactionData !== '0x'
+    }`,
+  );
+
+  // 1. Calldata is the strongest signal — a contract call, full stop.
   if (transactionData !== '0x') {
-    return { type: 'contract', certainty: 'definite' };
+    console.log(`${LOG} verdict=contract source=calldata`);
+    return { type: 'contract', certainty: 'definite', source: 'calldata' };
   }
 
-  // Empty calldata: prefer the multi-chain API proxy (covers ETH/Base/Intuition).
-  // A definite true/false from the API wins; null means "API couldn't decide"
-  // and we fall through to the direct Intuition RPC below.
+  // 2. Non-EVM chains (Solana, etc.): eth_getCode is meaningless. Never claim a
+  // contract/EOA verdict — surface a neutral "couldn't verify" instead.
+  const hexChainId = caip2ToHexChainId(chainId);
+  if (!hexChainId) {
+    console.log(`${LOG} verdict=uncertain reason=non_evm (chain=${chainId})`);
+    return { type: 'unknown', certainty: 'uncertain', reason: 'non_evm' };
+  }
+
+  // 3. Classify on the transaction's ACTUAL chain via the ethereum provider.
+  const txChainResult = await classifyOnTxChain(destinationAddress, hexChainId);
+  if (txChainResult.ok) {
+    console.log(
+      `${LOG} verdict=${
+        txChainResult.isContract ? 'contract' : 'eoa'
+      } source=tx_chain`,
+    );
+    return txChainResult.isContract
+      ? { type: 'contract', certainty: 'definite', source: 'tx_chain' }
+      : { type: 'eoa', certainty: 'definite', source: 'tx_chain' };
+  }
+
+  // Remember why the tx-chain path couldn't decide so we can preserve an
+  // accurate reason if every fallback also fails to produce a verdict.
+  const txChainFailReason: ClassificationFailureReason = txChainResult.reason;
+
+  // 4. Hive Mind API multi-chain proxy (ETH/Base/Intuition).
   const apiResult = await fetchContractStatusFromApi(destinationAddress);
   if (apiResult === true) {
-    return { type: 'contract', certainty: 'definite' };
+    console.log(`${LOG} verdict=contract source=api`);
+    return { type: 'contract', certainty: 'definite', source: 'api' };
   }
   if (apiResult === false) {
-    return { type: 'eoa', certainty: 'definite' };
+    console.log(`${LOG} verdict=eoa source=api`);
+    return { type: 'eoa', certainty: 'definite', source: 'api' };
   }
 
-  // API unavailable/undecided — fall back to direct Intuition eth_getCode.
-  // Transaction data is empty, but could still be a contract receiving tokens.
-  try {
-    const response = await fetch(chainConfig.rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'eth_getCode',
-        params: [destinationAddress, 'latest'],
-        id: 1,
-      }),
-    });
-
-    if (!response.ok) {
-      return { type: 'unknown', certainty: 'uncertain', reason: 'eth_getCode_failed' };
-    }
-
-    const data = await response.json();
-    const codeResponse = data.result;
-
-    if (codeResponse === '0x' || codeResponse === null) {
-      return { type: 'eoa', certainty: 'definite' };
-    } else {
-      return { type: 'contract', certainty: 'definite' };
-    }
-  } catch {
-    return { type: 'unknown', certainty: 'uncertain', reason: 'eth_getCode_failed' };
-  }
+  // Nothing could decide. Preserve the most informative reason: if the tx chain
+  // simply wasn't added, that's the actionable message ("add the network");
+  // otherwise report a generic verification failure.
+  console.log(
+    `${LOG} verdict=uncertain reason=${txChainFailReason} (all paths exhausted)`,
+  );
+  return {
+    type: 'unknown',
+    certainty: 'uncertain',
+    reason: txChainFailReason,
+  };
 };
 
 /**
@@ -139,9 +339,12 @@ const classifyAddress = async (
  *
  * See `term-stats.ts` for why we aggregate across curves instead of reading
  * `vaults[0]` (curve_id=1).
+ * @param triple
  */
 const getTrustMarketCap = (triple: TripleWithPositions | null): bigint => {
-  if (!triple) return 0n;
+  if (!triple) {
+    return 0n;
+  }
   const supportCap = BigInt(sumMarketCap(triple.term?.vaults));
   const counterCap = BigInt(sumMarketCap(triple.counter_term?.vaults));
   return supportCap + counterCap;
@@ -150,6 +353,11 @@ const getTrustMarketCap = (triple: TripleWithPositions | null): bigint => {
 /**
  * Selects the primary atom based on classification and trust signal.
  * For uncertain classifications, uses whichever format has higher trust stake.
+ * @param classification
+ * @param plainAtom
+ * @param caipAtom
+ * @param plainTrustTriple
+ * @param caipTrustTriple
  */
 const selectPrimaryAtom = (
   classification: AddressClassification,
@@ -206,16 +414,15 @@ const selectPrimaryAtom = (
         alternateTriple: plainTrustTriple,
         usedCaip: true,
       };
-    } else {
-      // Definite EOA: use plain as primary
-      return {
-        primary: plainAtom,
-        primaryTriple: plainTrustTriple,
-        alternate: caipAtom,
-        alternateTriple: caipTrustTriple,
-        usedCaip: false,
-      };
     }
+    // Definite EOA: use plain as primary
+    return {
+      primary: plainAtom,
+      primaryTriple: plainTrustTriple,
+      alternate: caipAtom,
+      alternateTriple: caipTrustTriple,
+      usedCaip: false,
+    };
   }
 
   // Uncertain classification: compare trust signal, use higher market cap
@@ -230,15 +437,14 @@ const selectPrimaryAtom = (
       alternateTriple: plainTrustTriple,
       usedCaip: true,
     };
-  } else {
-    return {
-      primary: plainAtom,
-      primaryTriple: plainTrustTriple,
-      alternate: caipAtom,
-      alternateTriple: caipTrustTriple,
-      usedCaip: false,
-    };
   }
+  return {
+    primary: plainAtom,
+    primaryTriple: plainTrustTriple,
+    alternate: caipAtom,
+    alternateTriple: caipTrustTriple,
+    usedCaip: false,
+  };
 };
 
 export const getAccountData = async (
@@ -249,26 +455,31 @@ export const getAccountData = async (
   const { to: destinationAddress, data: transactionData } = transaction;
   const caipAddress = addressToCaip10(destinationAddress, chainId);
 
-  // Step 1: Classify the address with certainty tracking
-  // Uses the configured Intuition chain's RPC (transaction chain is irrelevant)
-  const classification = await classifyAddress(
-    destinationAddress,
-    transactionData,
-  );
-
-  // Derive isContract from classification (for backwards compatibility)
-  const isContract =
-    classification.type === 'contract' ||
-    (classification.certainty === 'uncertain'); // Default to contract when uncertain
-
-  // Step 2: Query both atom formats
+  // Step 1: Classification and the atom lookup are independent — classification
+  // only feeds `isContract` + `selectPrimaryAtom`, neither of which the atom
+  // query needs. Fire both together so the classification RPC round-trip
+  // (provider switch + eth_getCode, possibly the API) overlaps the GraphQL atom
+  // fetch instead of blocking it. (The provider network switch is HTTP-isolated
+  // from the GraphQL endpoint, so concurrency is safe.)
   try {
-    const [atomsResponse] = await Promise.all([
+    const [classification, atomsResponse] = await Promise.all([
+      classifyAddress(destinationAddress, transactionData, chainId),
       graphQLQuery(getAddressAtomsQuery, {
         plainAddress: destinationAddress,
-        caipAddress: caipAddress,
+        caipAddress,
       }),
     ]);
+
+    // Derive isContract from classification (for downstream safety/atom logic).
+    // A definite contract is a contract. For UNCERTAIN cases we default to
+    // contract EXCEPT non-EVM, where "contract" is meaningless — there we
+    // default to false so we don't imply an EVM contract verdict on e.g. Solana.
+    const isContract =
+      classification.type === 'contract' ||
+      (classification.certainty === 'uncertain' &&
+        classification.reason !== 'non_evm');
+    console.log(`${LOG} derived isContract=${isContract}`);
+
     const { plainAtoms, caipAtoms } = atomsResponse.data;
     const plainAtom = plainAtoms?.[0] as Account | undefined;
     const caipAtom = caipAtoms?.[0] as Account | undefined;
@@ -323,7 +534,10 @@ export const getAccountData = async (
     const trustResponses = await Promise.all(trustQueries);
 
     // Map responses back to their keys
-    const trustResults: { plain?: TripleWithPositions; caip?: TripleWithPositions } = {};
+    const trustResults: {
+      plain?: TripleWithPositions;
+      caip?: TripleWithPositions;
+    } = {};
     queryKeys.forEach((key, idx) => {
       trustResults[key] = trustResponses[idx].data.triples[0] || null;
     });
